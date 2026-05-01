@@ -4,6 +4,11 @@ import android.Manifest
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color as AndroidColor
+import android.graphics.Paint
+import android.graphics.Path
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -44,6 +49,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat.startForegroundService
@@ -65,6 +72,8 @@ import com.example.voicerecorderlocation.data.RecordingSessionEntity
 import com.example.voicerecorderlocation.di.ServiceLocator
 import com.example.voicerecorderlocation.tracking.TrackingForegroundService
 import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.model.BitmapDescriptor
+import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.GoogleMap
@@ -89,11 +98,6 @@ import java.io.FileOutputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
-import kotlin.math.PI
-import kotlin.math.asin
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.sin
 import java.util.Locale
 import java.util.UUID
 
@@ -398,6 +402,8 @@ private fun RouteMap(
     val route = points.map { LatLng(it.latitude, it.longitude) }
     val current = locationAtProgress(points, sessionStartMillis, progressMillis)
     val currentLatLng = current?.let { LatLng(it.latitude, it.longitude) }
+    val traveledRoute = traveledRouteAtProgress(points, sessionStartMillis, progressMillis)
+    val arrowIcon = remember { createArrowBitmapDescriptor() }
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(first?.let { LatLng(it.latitude, it.longitude) } ?: LatLng(35.6812, 139.7671), 15f)
     }
@@ -421,7 +427,10 @@ private fun RouteMap(
         properties = MapProperties(mapType = mapType)
     ) {
         if (route.size >= 2) {
-            Polyline(points = route)
+            Polyline(points = route, color = Color.LightGray, width = 5f)
+        }
+        if (traveledRoute.size >= 2) {
+            Polyline(points = traveledRoute, color = Color.Black, width = 8f, zIndex = 1f)
         }
         first?.let {
             Marker(
@@ -432,12 +441,14 @@ private fun RouteMap(
         current?.let {
             Marker(
                 state = rememberUpdatedMarkerState(LatLng(it.latitude, it.longitude)),
+                anchor = Offset(0.5f, 0.5f),
+                flat = true,
+                icon = arrowIcon,
+                rotation = it.bearingDegrees ?: 0f,
                 title = "Current",
-                snippet = "Direction ${formatBearing(it.bearingDegrees)}"
+                snippet = "Direction ${formatBearing(it.bearingDegrees)}",
+                zIndex = 2f
             )
-            directionSegment(LatLng(it.latitude, it.longitude), it.bearingDegrees)?.let { segment ->
-                Polyline(points = segment, width = 8f)
-            }
         }
     }
 }
@@ -559,7 +570,7 @@ private fun locationAtProgress(
     progressMillis: Long
 ): PlaybackLocation? {
     if (points.isEmpty()) return null
-    val targetTime = (sessionStartMillis ?: points.first().recordedAtMillis) + progressMillis
+    val targetTime = targetTimeAtProgress(points, sessionStartMillis, progressMillis)
     val nextIndex = points.indexOfFirst { it.recordedAtMillis >= targetTime }
 
     if (nextIndex <= 0) {
@@ -590,27 +601,64 @@ private fun LocationPointEntity.toPlaybackLocation(): PlaybackLocation {
     )
 }
 
-private fun directionSegment(origin: LatLng, bearingDegrees: Float?): List<LatLng>? {
-    val bearing = bearingDegrees ?: return null
-    return listOf(origin, destinationPoint(origin, bearing, 40.0))
+private fun traveledRouteAtProgress(
+    points: List<LocationPointEntity>,
+    sessionStartMillis: Long?,
+    progressMillis: Long
+): List<LatLng> {
+    if (points.isEmpty()) return emptyList()
+    val targetTime = targetTimeAtProgress(points, sessionStartMillis, progressMillis)
+    val current = locationAtProgress(points, sessionStartMillis, progressMillis)
+    return buildList {
+        points
+            .filter { it.recordedAtMillis <= targetTime }
+            .forEach { add(LatLng(it.latitude, it.longitude)) }
+        current?.let { add(LatLng(it.latitude, it.longitude)) }
+    }.distinctConsecutive()
 }
 
-private fun destinationPoint(origin: LatLng, bearingDegrees: Float, distanceMeters: Double): LatLng {
-    val angularDistance = distanceMeters / EARTH_RADIUS_METERS
-    val bearing = bearingDegrees.toDouble().degreesToRadians()
-    val lat1 = origin.latitude.degreesToRadians()
-    val lon1 = origin.longitude.degreesToRadians()
+private fun targetTimeAtProgress(
+    points: List<LocationPointEntity>,
+    sessionStartMillis: Long?,
+    progressMillis: Long
+): Long = (sessionStartMillis ?: points.first().recordedAtMillis) + progressMillis
 
-    val lat2 = asin(
-        sin(lat1) * cos(angularDistance) +
-            cos(lat1) * sin(angularDistance) * cos(bearing)
-    )
-    val lon2 = lon1 + atan2(
-        sin(bearing) * sin(angularDistance) * cos(lat1),
-        cos(angularDistance) - sin(lat1) * sin(lat2)
-    )
+private fun List<LatLng>.distinctConsecutive(): List<LatLng> {
+    return filterIndexed { index, latLng -> index == 0 || latLng != this[index - 1] }
+}
 
-    return LatLng(lat2 * 180.0 / PI, lon2 * 180.0 / PI)
+private fun createArrowBitmapDescriptor(): BitmapDescriptor {
+    val size = 96
+    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = AndroidColor.argb(80, 0, 0, 0)
+        style = Paint.Style.FILL
+    }
+    val arrowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = AndroidColor.rgb(211, 47, 47)
+        style = Paint.Style.FILL
+    }
+    val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = AndroidColor.WHITE
+        style = Paint.Style.STROKE
+        strokeWidth = 6f
+        strokeJoin = Paint.Join.ROUND
+    }
+    val arrow = Path().apply {
+        moveTo(size / 2f, 8f)
+        lineTo(78f, 82f)
+        lineTo(size / 2f, 64f)
+        lineTo(18f, 82f)
+        close()
+    }
+    canvas.save()
+    canvas.translate(0f, 4f)
+    canvas.drawPath(arrow, shadowPaint)
+    canvas.restore()
+    canvas.drawPath(arrow, arrowPaint)
+    canvas.drawPath(arrow, strokePaint)
+    return BitmapDescriptorFactory.fromBitmap(bitmap)
 }
 
 private data class ImportedSessionArchive(
@@ -789,10 +837,6 @@ private fun JSONObject.pointsFromMetadata(): List<LocationPointEntity> {
         )
     }
 }
-
-private const val EARTH_RADIUS_METERS = 6_371_000.0
-
-private fun Double.degreesToRadians(): Double = this * PI / 180.0
 
 private fun JSONObject.nullableLong(name: String): Long? =
     if (isNull(name)) null else getLong(name)
