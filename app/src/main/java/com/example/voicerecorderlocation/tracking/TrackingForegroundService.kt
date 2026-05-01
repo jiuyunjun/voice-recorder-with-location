@@ -17,6 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import java.io.File
@@ -62,21 +63,23 @@ class TrackingForegroundService : Service() {
             activeSessionId = sessionId
             recorder.start(audioFile)
             locationJob = launch {
-                LocationSampler(applicationContext).locations().collect { location ->
-                    ServiceLocator.repository.addLocation(
-                        LocationPointEntity(
-                            sessionId = sessionId,
-                            latitude = location.latitude,
-                            longitude = location.longitude,
-                            accuracyMeters = if (location.hasAccuracy()) location.accuracy else null,
-                            altitudeMeters = if (location.hasAltitude()) location.altitude else null,
-                            speedMetersPerSecond = if (location.hasSpeed()) location.speed else null,
-                            bearingDegrees = if (location.hasBearing()) location.bearing else null,
-                            recordedAtMillis = location.time,
-                            elapsedRealtimeNanos = location.elapsedRealtimeNanos
+                LocationSampler(applicationContext).locations()
+                    .catch { /* Keep recording audio even when location updates are unavailable. */ }
+                    .collect { location ->
+                        ServiceLocator.repository.addLocation(
+                            LocationPointEntity(
+                                sessionId = sessionId,
+                                latitude = location.latitude,
+                                longitude = location.longitude,
+                                accuracyMeters = if (location.hasAccuracy()) location.accuracy else null,
+                                altitudeMeters = if (location.hasAltitude()) location.altitude else null,
+                                speedMetersPerSecond = if (location.hasSpeed()) location.speed else null,
+                                bearingDegrees = if (location.hasBearing()) location.bearing else null,
+                                recordedAtMillis = location.time,
+                                elapsedRealtimeNanos = location.elapsedRealtimeNanos
+                            )
                         )
-                    )
-                }
+                    }
             }
         }
     }
