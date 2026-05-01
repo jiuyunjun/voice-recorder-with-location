@@ -21,6 +21,8 @@ class AudioRecorder {
         recorder = mediaRecorder
     }
 
+    fun maxAmplitude(): Int = recorder?.maxAmplitude ?: 0
+
     fun stop() {
         val current = recorder ?: return
         runCatching { current.stop() }

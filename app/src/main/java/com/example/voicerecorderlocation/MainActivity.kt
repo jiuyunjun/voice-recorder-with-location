@@ -16,17 +16,22 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -51,6 +56,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat.startForegroundService
@@ -99,6 +105,7 @@ import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
 import java.util.Locale
 import java.util.UUID
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -113,8 +120,13 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private object RecordingRuntimeState {
+object RecordingRuntimeState {
     var isRecording by mutableStateOf(false)
+    var startedAtMillis by mutableStateOf<Long?>(null)
+    var amplitudeLevel by mutableFloatStateOf(0f)
+    var locationStatus by mutableStateOf("Waiting for GPS")
+    var locationAccuracyMeters by mutableStateOf<Float?>(null)
+    var pointCount by mutableStateOf(0)
 }
 
 @Composable
@@ -162,6 +174,12 @@ private fun VoiceRecorderApp() {
 private fun RecordingScreen() {
     val context = LocalContext.current
     val isRecording = RecordingRuntimeState.isRecording
+    val startedAtMillis = RecordingRuntimeState.startedAtMillis
+    val amplitudeLevel = RecordingRuntimeState.amplitudeLevel
+    val locationStatus = RecordingRuntimeState.locationStatus
+    val accuracyMeters = RecordingRuntimeState.locationAccuracyMeters
+    val pointCount = RecordingRuntimeState.pointCount
+    var nowMillis by remember { mutableStateOf(System.currentTimeMillis()) }
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
@@ -170,16 +188,44 @@ private fun RecordingScreen() {
             RecordingRuntimeState.isRecording = true
         }
     }
+    LaunchedEffect(isRecording) {
+        while (isRecording) {
+            nowMillis = System.currentTimeMillis()
+            delay(500)
+        }
+    }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .padding(16.dp)
     ) {
-        Text("Recording", style = MaterialTheme.typography.headlineMedium)
-        Text("Foreground service records audio and location continuously, including while the app is in the background.")
-        Button(
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text("Recording", style = MaterialTheme.typography.headlineMedium)
+            RecordingStatusCard(
+                isRecording = isRecording,
+                elapsedMillis = startedAtMillis?.let { nowMillis - it } ?: 0L,
+                locationStatus = locationStatus,
+                accuracyMeters = accuracyMeters,
+                pointCount = pointCount,
+                amplitudeLevel = amplitudeLevel
+            )
+            Button(onClick = { context.openAppSettings() }) {
+                Text("Open app settings for background location")
+            }
+            Spacer(modifier = Modifier.weight(1f))
+        }
+
+        RecordButton(
+            isRecording = isRecording,
+            amplitudeLevel = amplitudeLevel,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = 24.dp),
             onClick = {
                 if (isRecording) {
                     context.startService(TrackingForegroundService.stopIntent(context))
@@ -188,11 +234,82 @@ private fun RecordingScreen() {
                     permissionLauncher.launch(requiredRuntimePermissions())
                 }
             }
+        )
+    }
+}
+
+@Composable
+private fun RecordingStatusCard(
+    isRecording: Boolean,
+    elapsedMillis: Long,
+    locationStatus: String,
+    accuracyMeters: Float?,
+    pointCount: Int,
+    amplitudeLevel: Float
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(if (isRecording) "Stop" else "Start")
+            Text(
+                if (isRecording) "Recording now" else "Ready",
+                style = MaterialTheme.typography.titleMedium
+            )
+            Text("Time ${formatMillis(elapsedMillis.coerceAtLeast(0L))}")
+            Text("Location $locationStatus")
+            Text("Accuracy ${accuracyMeters?.let { "+/-${it.roundToInt()} m" } ?: "unknown"}")
+            Text("Points $pointCount")
+            Text("Voice ${(amplitudeLevel * 100f).roundToInt()}%")
         }
-        Button(onClick = { context.openAppSettings() }) {
-            Text("Open app settings for background location")
+    }
+}
+
+@Composable
+private fun RecordButton(
+    isRecording: Boolean,
+    amplitudeLevel: Float,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = modifier.size(128.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        RecordingAmplitudeRipple(
+            amplitudeLevel = if (isRecording) amplitudeLevel else 0f,
+            modifier = Modifier.fillMaxSize()
+        )
+        Button(
+            onClick = onClick,
+            modifier = Modifier.size(88.dp),
+            shape = CircleShape,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (isRecording) Color(0xFFD32F2F) else MaterialTheme.colorScheme.primary
+            )
+        ) {
+            Text(if (isRecording) "Stop" else "Rec")
+        }
+    }
+}
+
+@Composable
+private fun RecordingAmplitudeRipple(
+    amplitudeLevel: Float,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val baseRadius = 42.dp.toPx()
+        val level = amplitudeLevel.coerceIn(0f, 1f)
+        listOf(0.35f, 0.7f, 1f).forEachIndexed { index, scale ->
+            val radius = baseRadius + level * (18.dp.toPx() + index * 14.dp.toPx()) * scale
+            val alpha = (0.08f + level * 0.22f) / (index + 1)
+            drawCircle(
+                color = Color(0xFFD32F2F).copy(alpha = alpha),
+                radius = radius,
+                center = center
+            )
         }
     }
 }

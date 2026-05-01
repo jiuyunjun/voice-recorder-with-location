@@ -10,6 +10,7 @@ import android.os.Environment
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.example.voicerecorderlocation.R
+import com.example.voicerecorderlocation.RecordingRuntimeState
 import com.example.voicerecorderlocation.data.LocationPointEntity
 import com.example.voicerecorderlocation.di.ServiceLocator
 import kotlinx.coroutines.CoroutineScope
@@ -17,6 +18,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
@@ -24,12 +26,14 @@ import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlin.math.sqrt
 
 class TrackingForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val recorder = AudioRecorder()
     private var activeSessionId: Long? = null
     private var locationJob: Job? = null
+    private var amplitudeJob: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -62,8 +66,26 @@ class TrackingForegroundService : Service() {
             )
             activeSessionId = sessionId
             recorder.start(audioFile)
+            scope.launch(Dispatchers.Main) {
+                RecordingRuntimeState.isRecording = true
+                RecordingRuntimeState.startedAtMillis = startedAt
+                RecordingRuntimeState.amplitudeLevel = 0f
+                RecordingRuntimeState.locationStatus = "Waiting for GPS"
+                RecordingRuntimeState.locationAccuracyMeters = null
+                RecordingRuntimeState.pointCount = 0
+            }
+            amplitudeJob = launch {
+                while (true) {
+                    val level = recorder.maxAmplitude().normalizedAmplitudeLevel()
+                    scope.launch(Dispatchers.Main) {
+                        RecordingRuntimeState.amplitudeLevel = level
+                    }
+                    delay(80)
+                }
+            }
             locationJob = launch {
                 var lastLocation: android.location.Location? = null
+                var pointCount = 0
                 LocationSampler(applicationContext).locations()
                     .catch { /* Keep recording audio even when location updates are unavailable. */ }
                     .collect { location ->
@@ -87,6 +109,13 @@ class TrackingForegroundService : Service() {
                                 elapsedRealtimeNanos = location.elapsedRealtimeNanos
                             )
                         )
+                        pointCount += 1
+                        scope.launch(Dispatchers.Main) {
+                            RecordingRuntimeState.locationStatus = "Location locked"
+                            RecordingRuntimeState.locationAccuracyMeters =
+                                if (location.hasAccuracy()) location.accuracy else null
+                            RecordingRuntimeState.pointCount = pointCount
+                        }
                         lastLocation = location
                     }
             }
@@ -97,8 +126,18 @@ class TrackingForegroundService : Service() {
         val sessionId = activeSessionId ?: return
         locationJob?.cancel()
         locationJob = null
+        amplitudeJob?.cancel()
+        amplitudeJob = null
         recorder.stop()
         activeSessionId = null
+        scope.launch(Dispatchers.Main) {
+            RecordingRuntimeState.isRecording = false
+            RecordingRuntimeState.startedAtMillis = null
+            RecordingRuntimeState.amplitudeLevel = 0f
+            RecordingRuntimeState.locationStatus = "Waiting for GPS"
+            RecordingRuntimeState.locationAccuracyMeters = null
+            RecordingRuntimeState.pointCount = 0
+        }
         scope.launch {
             ServiceLocator.repository.finishSession(sessionId, System.currentTimeMillis())
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -147,3 +186,10 @@ class TrackingForegroundService : Service() {
 }
 
 private fun Float.normalizedBearing(): Float = (this + 360f) % 360f
+
+private fun Int.normalizedAmplitudeLevel(): Float {
+    if (this <= 0) return 0f
+    return sqrt((this.coerceAtMost(MAX_AMPLITUDE).toFloat() / MAX_AMPLITUDE).toDouble()).toFloat()
+}
+
+private const val MAX_AMPLITUDE = 32_767
