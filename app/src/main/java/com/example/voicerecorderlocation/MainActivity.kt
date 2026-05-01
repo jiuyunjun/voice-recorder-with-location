@@ -1,12 +1,17 @@
 package com.example.voicerecorderlocation
 
 import android.Manifest
+import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.database.Cursor
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.provider.Settings
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -14,7 +19,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -23,6 +27,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -43,6 +48,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat.startForegroundService
+import androidx.core.content.FileProvider
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -73,7 +80,9 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import java.io.File
+import java.util.UUID
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
@@ -99,13 +108,13 @@ private fun VoiceRecorderApp() {
                     selected = false,
                     onClick = { navController.navigate("record") },
                     label = { Text("Record") },
-                    icon = { Text("●") }
+                    icon = { Text("Rec") }
                 )
                 NavigationBarItem(
                     selected = false,
                     onClick = { navController.navigate("sessions") },
                     label = { Text("Sessions") },
-                    icon = { Text("≡") }
+                    icon = { Text("List") }
                 )
             }
         }
@@ -174,7 +183,16 @@ private fun RecordingListScreen(
     onOpen: (Long) -> Unit,
     viewModel: RecordingListViewModel = viewModel()
 ) {
+    val context = LocalContext.current
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
+    var selectedIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        viewModel.importAudio(uris)
+    }
+    val selectedSessions = sessions.filter { it.id in selectedIds }
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -183,21 +201,83 @@ private fun RecordingListScreen(
     ) {
         item {
             Text("Sessions", style = MaterialTheme.typography.headlineMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { importLauncher.launch(arrayOf("audio/*")) }) {
+                    Text("Import")
+                }
+                Button(
+                    onClick = {
+                        selectedIds = if (selectedIds.isEmpty()) {
+                            sessions.map { it.id }.toSet()
+                        } else {
+                            emptySet()
+                        }
+                    },
+                    enabled = sessions.isNotEmpty()
+                ) {
+                    Text(if (selectedIds.isEmpty()) "Select" else "Clear")
+                }
+            }
+            if (selectedIds.isNotEmpty()) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { shareSessions(context, selectedSessions) }) {
+                        Text("Share")
+                    }
+                    Button(
+                        onClick = {
+                            viewModel.deleteSessions(selectedSessions)
+                            selectedIds = emptySet()
+                        }
+                    ) {
+                        Text("Delete")
+                    }
+                }
+            }
         }
         items(sessions, key = { it.id }) { session ->
-            SessionCard(session = session, onOpen = { onOpen(session.id) })
+            val selected = session.id in selectedIds
+            SessionCard(
+                session = session,
+                selected = selected,
+                selecting = selectedIds.isNotEmpty(),
+                onToggleSelected = {
+                    selectedIds = if (selected) {
+                        selectedIds - session.id
+                    } else {
+                        selectedIds + session.id
+                    }
+                },
+                onOpen = { onOpen(session.id) }
+            )
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SessionCard(session: RecordingSessionEntity, onOpen: () -> Unit) {
-    Card(onClick = onOpen, modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(session.title, style = MaterialTheme.typography.titleMedium)
-            Text("Duration ${formatMillis(session.durationMillis)}")
-            Text(File(session.audioPath).name)
+private fun SessionCard(
+    session: RecordingSessionEntity,
+    selected: Boolean,
+    selecting: Boolean,
+    onToggleSelected: () -> Unit,
+    onOpen: () -> Unit
+) {
+    Card(
+        onClick = { if (selecting) onToggleSelected() else onOpen() },
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            if (selecting) {
+                Checkbox(checked = selected, onCheckedChange = { onToggleSelected() })
+            }
+            Column {
+                Text(session.title, style = MaterialTheme.typography.titleMedium)
+                Text("Duration ${formatMillis(session.durationMillis)}")
+                Text(File(session.audioPath).name)
+            }
         }
     }
 }
@@ -320,10 +400,41 @@ private fun RouteMap(
 }
 
 class RecordingListViewModel(
-    repository: RecordingRepository = ServiceLocator.repository
-) : ViewModel() {
+    application: Application
+) : AndroidViewModel(application) {
+    private val repository: RecordingRepository = ServiceLocator.repository
+
     val sessions: StateFlow<List<RecordingSessionEntity>> = repository.observeSessions()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun deleteSessions(sessions: List<RecordingSessionEntity>) {
+        viewModelScope.launch {
+            sessions.forEach { session ->
+                File(session.audioPath).delete()
+                repository.deleteSession(session.id)
+            }
+        }
+    }
+
+    fun importAudio(uris: List<Uri>) {
+        val context = getApplication<Application>()
+        viewModelScope.launch {
+            uris.forEach { uri ->
+                val importedAt = System.currentTimeMillis()
+                val displayName = context.displayName(uri) ?: "recording-$importedAt.m4a"
+                val target = context.createImportedAudioFile(displayName)
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    target.outputStream().use { output -> input.copyTo(output) }
+                } ?: return@forEach
+                repository.createImportedSession(
+                    title = displayName.substringBeforeLast('.'),
+                    audioPath = target.absolutePath,
+                    importedAtMillis = importedAt,
+                    durationMillis = context.audioDurationMillis(uri)
+                )
+            }
+        }
+    }
 }
 
 data class PlaybackUiState(
@@ -378,4 +489,53 @@ private fun pointAtProgress(points: List<LocationPointEntity>, progressMillis: L
     val firstTime = points.firstOrNull()?.recordedAtMillis ?: return null
     val targetTime = firstTime + progressMillis
     return points.lastOrNull { it.recordedAtMillis <= targetTime } ?: points.firstOrNull()
+}
+
+private fun shareSessions(context: Context, sessions: List<RecordingSessionEntity>) {
+    val uris = sessions.mapNotNull { session ->
+        val file = File(session.audioPath)
+        if (!file.exists()) return@mapNotNull null
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    }
+    if (uris.isEmpty()) return
+
+    val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+        type = "audio/*"
+        putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(intent, "Share recordings"))
+}
+
+private fun Context.displayName(uri: Uri): String? {
+    var cursor: Cursor? = null
+    return try {
+        cursor = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+        if (cursor != null && cursor.moveToFirst()) {
+            cursor.getString(0)
+        } else {
+            null
+        }
+    } finally {
+        cursor?.close()
+    }
+}
+
+private fun Context.createImportedAudioFile(displayName: String): File {
+    val directory = getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: filesDir
+    directory.mkdirs()
+    val cleanName = displayName
+        .replace(Regex("[^A-Za-z0-9._-]"), "_")
+        .ifBlank { "imported-recording.m4a" }
+    return File(directory, "${UUID.randomUUID()}-$cleanName")
+}
+
+private fun Context.audioDurationMillis(uri: Uri): Long {
+    val retriever = MediaMetadataRetriever()
+    return try {
+        retriever.setDataSource(this, uri)
+        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+    } finally {
+        retriever.release()
+    }
 }

@@ -22,6 +22,22 @@ class RecordingRepository(
             )
         )
 
+    suspend fun createImportedSession(
+        title: String,
+        audioPath: String,
+        importedAtMillis: Long,
+        durationMillis: Long
+    ): Long =
+        recordingDao.insert(
+            RecordingSessionEntity(
+                title = title,
+                audioPath = audioPath,
+                startedAtMillis = importedAtMillis,
+                endedAtMillis = importedAtMillis + durationMillis,
+                durationMillis = durationMillis
+            )
+        )
+
     suspend fun finishSession(id: Long, endedAtMillis: Long) {
         val current = recordingDao.getSession(id) ?: return
         recordingDao.update(
@@ -41,4 +57,3 @@ class RecordingRepository(
         recordingDao.delete(id)
     }
 }
-
