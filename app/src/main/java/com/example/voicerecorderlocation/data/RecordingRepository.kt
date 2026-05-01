@@ -13,6 +13,9 @@ class RecordingRepository(
     fun observePoints(sessionId: Long): Flow<List<LocationPointEntity>> =
         locationPointDao.observePoints(sessionId)
 
+    suspend fun getPoints(sessionId: Long): List<LocationPointEntity> =
+        locationPointDao.getPoints(sessionId)
+
     suspend fun createSession(title: String, audioPath: String, startedAtMillis: Long): Long =
         recordingDao.insert(
             RecordingSessionEntity(
@@ -25,15 +28,16 @@ class RecordingRepository(
     suspend fun createImportedSession(
         title: String,
         audioPath: String,
-        importedAtMillis: Long,
+        startedAtMillis: Long,
+        endedAtMillis: Long?,
         durationMillis: Long
     ): Long =
         recordingDao.insert(
             RecordingSessionEntity(
                 title = title,
                 audioPath = audioPath,
-                startedAtMillis = importedAtMillis,
-                endedAtMillis = importedAtMillis + durationMillis,
+                startedAtMillis = startedAtMillis,
+                endedAtMillis = endedAtMillis,
                 durationMillis = durationMillis
             )
         )
@@ -50,6 +54,12 @@ class RecordingRepository(
 
     suspend fun addLocation(point: LocationPointEntity) {
         locationPointDao.insert(point)
+    }
+
+    suspend fun addLocations(points: List<LocationPointEntity>) {
+        if (points.isNotEmpty()) {
+            locationPointDao.insertAll(points)
+        }
     }
 
     suspend fun deleteSession(id: Long) {

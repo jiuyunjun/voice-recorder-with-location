@@ -4,14 +4,11 @@ import android.Manifest
 import android.app.Application
 import android.content.Context
 import android.content.Intent
-import android.database.Cursor
-import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
-import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -78,12 +75,20 @@ import com.google.maps.android.compose.Polyline
 import com.google.maps.android.compose.rememberCameraPositionState
 import com.google.maps.android.compose.rememberUpdatedMarkerState
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 import kotlin.math.PI
 import kotlin.math.asin
 import kotlin.math.atan2
@@ -200,7 +205,7 @@ private fun RecordingListScreen(
     val importLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
-        viewModel.importAudio(uris)
+        viewModel.importZipArchives(uris)
     }
     val selectedSessions = sessions.filter { it.id in selectedIds }
 
@@ -213,7 +218,7 @@ private fun RecordingListScreen(
         item {
             Text("Sessions", style = MaterialTheme.typography.headlineMedium)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { importLauncher.launch(arrayOf("audio/*")) }) {
+                Button(onClick = { importLauncher.launch(arrayOf("application/zip")) }) {
                     Text("Import")
                 }
                 Button(
@@ -225,7 +230,7 @@ private fun RecordingListScreen(
             }
             if (selectedIds.isNotEmpty()) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { shareSessions(context, selectedSessions) }) {
+                    Button(onClick = { viewModel.exportAndShare(context, selectedSessions) }) {
                         Text("Share")
                     }
                     Button(
@@ -432,22 +437,38 @@ class RecordingListViewModel(
         }
     }
 
-    fun importAudio(uris: List<Uri>) {
+    fun exportAndShare(shareContext: Context, sessions: List<RecordingSessionEntity>) {
         val context = getApplication<Application>()
         viewModelScope.launch {
-            uris.forEach { uri ->
-                val importedAt = System.currentTimeMillis()
-                val displayName = context.displayName(uri) ?: "recording-$importedAt.m4a"
-                val target = context.createImportedAudioFile(displayName)
-                context.contentResolver.openInputStream(uri)?.use { input ->
-                    target.outputStream().use { output -> input.copyTo(output) }
-                } ?: return@forEach
-                repository.createImportedSession(
-                    title = displayName.substringBeforeLast('.'),
-                    audioPath = target.absolutePath,
-                    importedAtMillis = importedAt,
-                    durationMillis = context.audioDurationMillis(uri)
-                )
+            val zipFiles = withContext(Dispatchers.IO) {
+                sessions.mapNotNull { session ->
+                    val points = repository.getPoints(session.id)
+                    context.exportSessionZip(session, points)
+                }
+            }
+            shareZipFiles(shareContext, zipFiles)
+        }
+    }
+
+    fun importZipArchives(uris: List<Uri>) {
+        val context = getApplication<Application>()
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                uris.forEach { uri ->
+                    val imported = context.importSessionZip(uri) ?: return@forEach
+                    val sessionId = repository.createImportedSession(
+                        title = imported.title,
+                        audioPath = imported.audioFile.absolutePath,
+                        startedAtMillis = imported.startedAtMillis,
+                        endedAtMillis = imported.endedAtMillis,
+                        durationMillis = imported.durationMillis
+                    )
+                    repository.addLocations(
+                        imported.points.map { point ->
+                            point.copy(id = 0, sessionId = sessionId)
+                        }
+                    )
+                }
             }
         }
     }
@@ -533,34 +554,97 @@ private fun destinationPoint(origin: LatLng, bearingDegrees: Float, distanceMete
     return LatLng(lat2 * 180.0 / PI, lon2 * 180.0 / PI)
 }
 
-private fun shareSessions(context: Context, sessions: List<RecordingSessionEntity>) {
-    val uris = sessions.mapNotNull { session ->
-        val file = File(session.audioPath)
+private data class ImportedSessionArchive(
+    val title: String,
+    val audioFile: File,
+    val startedAtMillis: Long,
+    val endedAtMillis: Long?,
+    val durationMillis: Long,
+    val points: List<LocationPointEntity>
+)
+
+private fun shareZipFiles(context: Context, zipFiles: List<File>) {
+    val uris = zipFiles.mapNotNull { file ->
         if (!file.exists()) return@mapNotNull null
         FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
     }
     if (uris.isEmpty()) return
 
     val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-        type = "audio/*"
+        type = "application/zip"
         putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     }
-    context.startActivity(Intent.createChooser(intent, "Share recordings"))
+    context.startActivity(Intent.createChooser(intent, "Share recording archives"))
 }
 
-private fun Context.displayName(uri: Uri): String? {
-    var cursor: Cursor? = null
-    return try {
-        cursor = contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-        if (cursor != null && cursor.moveToFirst()) {
-            cursor.getString(0)
-        } else {
-            null
-        }
-    } finally {
-        cursor?.close()
+private fun Context.exportSessionZip(
+    session: RecordingSessionEntity,
+    points: List<LocationPointEntity>
+): File? {
+    val audioFile = File(session.audioPath)
+    if (!audioFile.exists()) return null
+
+    val exportDirectory = File(getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: filesDir, "Exports")
+    exportDirectory.mkdirs()
+    val safeTitle = session.title.sanitizedFileName().ifBlank { "recording-${session.id}" }
+    val zipFile = File(exportDirectory, "$safeTitle-${session.id}.zip")
+    val audioEntryName = "recording.${audioFile.extension.ifBlank { "m4a" }}"
+    val metadata = sessionArchiveMetadata(session, points, audioEntryName)
+    val geoJson = sessionTrackGeoJson(session, points)
+
+    ZipOutputStream(FileOutputStream(zipFile)).use { zip ->
+        zip.putNextEntry(ZipEntry(audioEntryName))
+        audioFile.inputStream().use { it.copyTo(zip) }
+        zip.closeEntry()
+
+        zip.putNextEntry(ZipEntry("metadata.json"))
+        zip.write(metadata.toString(2).toByteArray(Charsets.UTF_8))
+        zip.closeEntry()
+
+        zip.putNextEntry(ZipEntry("track.geojson"))
+        zip.write(geoJson.toString(2).toByteArray(Charsets.UTF_8))
+        zip.closeEntry()
     }
+    return zipFile
+}
+
+private fun Context.importSessionZip(uri: Uri): ImportedSessionArchive? {
+    var metadata: JSONObject? = null
+    var audioFile: File? = null
+
+    contentResolver.openInputStream(uri)?.use { input ->
+        ZipInputStream(input).use { zip ->
+            var entry = zip.nextEntry
+            while (entry != null) {
+                if (!entry.isDirectory) {
+                    when {
+                        entry.name == "metadata.json" -> {
+                            metadata = JSONObject(zip.readBytes().toString(Charsets.UTF_8))
+                        }
+                        entry.name.startsWith("recording.") -> {
+                            val target = createImportedAudioFile(entry.name)
+                            FileOutputStream(target).use { output -> zip.copyTo(output) }
+                            audioFile = target
+                        }
+                    }
+                }
+                zip.closeEntry()
+                entry = zip.nextEntry
+            }
+        }
+    }
+
+    val archiveMetadata = metadata ?: return null
+    val importedAudioFile = audioFile ?: return null
+    return ImportedSessionArchive(
+        title = archiveMetadata.optString("title", importedAudioFile.nameWithoutExtension),
+        audioFile = importedAudioFile,
+        startedAtMillis = archiveMetadata.optLong("startedAtMillis", System.currentTimeMillis()),
+        endedAtMillis = archiveMetadata.nullableLong("endedAtMillis"),
+        durationMillis = archiveMetadata.optLong("durationMillis", 0L),
+        points = archiveMetadata.pointsFromMetadata()
+    )
 }
 
 private fun Context.createImportedAudioFile(displayName: String): File {
@@ -572,16 +656,90 @@ private fun Context.createImportedAudioFile(displayName: String): File {
     return File(directory, "${UUID.randomUUID()}-$cleanName")
 }
 
-private fun Context.audioDurationMillis(uri: Uri): Long {
-    val retriever = MediaMetadataRetriever()
-    return try {
-        retriever.setDataSource(this, uri)
-        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-    } finally {
-        retriever.release()
+private fun sessionArchiveMetadata(
+    session: RecordingSessionEntity,
+    points: List<LocationPointEntity>,
+    audioEntryName: String
+): JSONObject =
+    JSONObject()
+        .put("format", "voice-recorder-with-location")
+        .put("version", 1)
+        .put("title", session.title)
+        .put("audioEntry", audioEntryName)
+        .put("startedAtMillis", session.startedAtMillis)
+        .put("endedAtMillis", session.endedAtMillis ?: JSONObject.NULL)
+        .put("durationMillis", session.durationMillis)
+        .put("points", JSONArray(points.map { it.toJson() }))
+
+private fun sessionTrackGeoJson(
+    session: RecordingSessionEntity,
+    points: List<LocationPointEntity>
+): JSONObject =
+    JSONObject()
+        .put("type", "FeatureCollection")
+        .put(
+            "features",
+            JSONArray(
+                listOf(
+                    JSONObject()
+                        .put("type", "Feature")
+                        .put(
+                            "properties",
+                            JSONObject()
+                                .put("title", session.title)
+                                .put("startedAtMillis", session.startedAtMillis)
+                        )
+                        .put(
+                            "geometry",
+                            JSONObject()
+                                .put("type", "LineString")
+                                .put(
+                                    "coordinates",
+                                    JSONArray(points.map { JSONArray(listOf(it.longitude, it.latitude)) })
+                                )
+                        )
+                )
+            )
+        )
+
+private fun LocationPointEntity.toJson(): JSONObject =
+    JSONObject()
+        .put("latitude", latitude)
+        .put("longitude", longitude)
+        .put("accuracyMeters", accuracyMeters ?: JSONObject.NULL)
+        .put("altitudeMeters", altitudeMeters ?: JSONObject.NULL)
+        .put("speedMetersPerSecond", speedMetersPerSecond ?: JSONObject.NULL)
+        .put("bearingDegrees", bearingDegrees ?: JSONObject.NULL)
+        .put("recordedAtMillis", recordedAtMillis)
+        .put("elapsedRealtimeNanos", elapsedRealtimeNanos)
+
+private fun JSONObject.pointsFromMetadata(): List<LocationPointEntity> {
+    val points = optJSONArray("points") ?: return emptyList()
+    return List(points.length()) { index ->
+        val point = points.getJSONObject(index)
+        LocationPointEntity(
+            sessionId = 0,
+            latitude = point.getDouble("latitude"),
+            longitude = point.getDouble("longitude"),
+            accuracyMeters = point.nullableDouble("accuracyMeters")?.toFloat(),
+            altitudeMeters = point.nullableDouble("altitudeMeters"),
+            speedMetersPerSecond = point.nullableDouble("speedMetersPerSecond")?.toFloat(),
+            bearingDegrees = point.nullableDouble("bearingDegrees")?.toFloat(),
+            recordedAtMillis = point.getLong("recordedAtMillis"),
+            elapsedRealtimeNanos = point.optLong("elapsedRealtimeNanos", 0L)
+        )
     }
 }
 
 private const val EARTH_RADIUS_METERS = 6_371_000.0
 
 private fun Double.degreesToRadians(): Double = this * PI / 180.0
+
+private fun JSONObject.nullableLong(name: String): Long? =
+    if (isNull(name)) null else getLong(name)
+
+private fun JSONObject.nullableDouble(name: String): Double? =
+    if (isNull(name)) null else getDouble(name)
+
+private fun String.sanitizedFileName(): String =
+    replace(Regex("[^A-Za-z0-9._-]"), "_")
