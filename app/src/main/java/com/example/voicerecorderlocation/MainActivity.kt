@@ -310,8 +310,15 @@ private fun PlaybackScreen(sessionId: Long) {
     var playing by remember { mutableStateOf(false) }
     var mapType by remember { mutableStateOf(MapType.NORMAL) }
 
+    LaunchedEffect(player) {
+        player?.setOnCompletionListener {
+            progress = it.duration.toFloat()
+            playing = false
+        }
+    }
     DisposableEffect(player) {
         onDispose {
+            player?.setOnCompletionListener(null)
             player?.release()
         }
     }
@@ -337,7 +344,12 @@ private fun PlaybackScreen(sessionId: Long) {
                 Text("Satellite")
             }
         }
-        RouteMap(points = state.points, progressMillis = progress.toLong(), mapType = mapType)
+        RouteMap(
+            points = state.points,
+            sessionStartMillis = state.session?.startedAtMillis,
+            progressMillis = progress.toLong(),
+            mapType = mapType
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 onClick = {
@@ -365,8 +377,12 @@ private fun PlaybackScreen(sessionId: Long) {
             },
             valueRange = 0f..(player?.duration?.toFloat() ?: 1f)
         )
-        val currentPoint = pointAtProgress(state.points, progress.toLong())
-        Text("Direction ${formatBearing(currentPoint?.bearingDegrees)}")
+        val currentLocation = locationAtProgress(
+            points = state.points,
+            sessionStartMillis = state.session?.startedAtMillis,
+            progressMillis = progress.toLong()
+        )
+        Text("Direction ${formatBearing(currentLocation?.bearingDegrees)}")
         Text("${formatMillis(progress.toLong())} / ${formatMillis(player?.duration?.toLong() ?: 0)}")
     }
 }
@@ -374,11 +390,14 @@ private fun PlaybackScreen(sessionId: Long) {
 @Composable
 private fun RouteMap(
     points: List<LocationPointEntity>,
+    sessionStartMillis: Long?,
     progressMillis: Long,
     mapType: MapType
 ) {
     val first = points.firstOrNull()
     val route = points.map { LatLng(it.latitude, it.longitude) }
+    val current = locationAtProgress(points, sessionStartMillis, progressMillis)
+    val currentLatLng = current?.let { LatLng(it.latitude, it.longitude) }
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(first?.let { LatLng(it.latitude, it.longitude) } ?: LatLng(35.6812, 139.7671), 15f)
     }
@@ -386,6 +405,11 @@ private fun RouteMap(
     LaunchedEffect(first?.id) {
         if (first != null) {
             cameraPositionState.move(CameraUpdateFactory.newLatLngZoom(LatLng(first.latitude, first.longitude), 15f))
+        }
+    }
+    LaunchedEffect(currentLatLng) {
+        if (currentLatLng != null) {
+            cameraPositionState.animate(CameraUpdateFactory.newLatLng(currentLatLng))
         }
     }
 
@@ -405,15 +429,13 @@ private fun RouteMap(
                 title = "Start"
             )
         }
-        val current = pointAtProgress(points, progressMillis)
         current?.let {
-            val currentLatLng = LatLng(it.latitude, it.longitude)
             Marker(
-                state = rememberUpdatedMarkerState(currentLatLng),
+                state = rememberUpdatedMarkerState(LatLng(it.latitude, it.longitude)),
                 title = "Current",
                 snippet = "Direction ${formatBearing(it.bearingDegrees)}"
             )
-            directionSegment(currentLatLng, it.bearingDegrees)?.let { segment ->
+            directionSegment(LatLng(it.latitude, it.longitude), it.bearingDegrees)?.let { segment ->
                 Polyline(points = segment, width = 8f)
             }
         }
@@ -525,10 +547,47 @@ private fun formatMillis(millis: Long): String {
 private fun formatBearing(bearingDegrees: Float?): String =
     bearingDegrees?.let { "${it.toInt()} deg" } ?: "unknown"
 
-private fun pointAtProgress(points: List<LocationPointEntity>, progressMillis: Long): LocationPointEntity? {
-    val firstTime = points.firstOrNull()?.recordedAtMillis ?: return null
-    val targetTime = firstTime + progressMillis
-    return points.lastOrNull { it.recordedAtMillis <= targetTime } ?: points.firstOrNull()
+private data class PlaybackLocation(
+    val latitude: Double,
+    val longitude: Double,
+    val bearingDegrees: Float?
+)
+
+private fun locationAtProgress(
+    points: List<LocationPointEntity>,
+    sessionStartMillis: Long?,
+    progressMillis: Long
+): PlaybackLocation? {
+    if (points.isEmpty()) return null
+    val targetTime = (sessionStartMillis ?: points.first().recordedAtMillis) + progressMillis
+    val nextIndex = points.indexOfFirst { it.recordedAtMillis >= targetTime }
+
+    if (nextIndex <= 0) {
+        return points.first().toPlaybackLocation()
+    }
+    if (nextIndex == -1) {
+        return points.last().toPlaybackLocation()
+    }
+
+    val previous = points[nextIndex - 1]
+    val next = points[nextIndex]
+    val spanMillis = next.recordedAtMillis - previous.recordedAtMillis
+    if (spanMillis <= 0L) return next.toPlaybackLocation()
+
+    val fraction = (targetTime - previous.recordedAtMillis).toDouble() / spanMillis.toDouble()
+    return PlaybackLocation(
+        latitude = previous.latitude + (next.latitude - previous.latitude) * fraction,
+        longitude = previous.longitude + (next.longitude - previous.longitude) * fraction,
+        bearingDegrees = previous.bearingDegrees ?: next.bearingDegrees
+    )
+}
+
+private fun LocationPointEntity.toPlaybackLocation(): PlaybackLocation {
+    return PlaybackLocation(
+        latitude = latitude,
+        longitude = longitude,
+        bearingDegrees = bearingDegrees
+    )
 }
 
 private fun directionSegment(origin: LatLng, bearingDegrees: Float?): List<LatLng>? {
