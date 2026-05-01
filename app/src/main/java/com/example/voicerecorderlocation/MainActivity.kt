@@ -4,11 +4,6 @@ import android.Manifest
 import android.app.Application
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.Color as AndroidColor
-import android.graphics.Paint
-import android.graphics.Path
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -18,6 +13,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -27,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
@@ -51,6 +48,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat.startForegroundService
@@ -72,14 +72,13 @@ import com.example.voicerecorderlocation.data.RecordingSessionEntity
 import com.example.voicerecorderlocation.di.ServiceLocator
 import com.example.voicerecorderlocation.tracking.TrackingForegroundService
 import com.google.android.gms.maps.CameraUpdateFactory
-import com.google.android.gms.maps.model.BitmapDescriptor
-import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.GoogleMap
 import com.google.maps.android.compose.MapProperties
 import com.google.maps.android.compose.MapType
 import com.google.maps.android.compose.Marker
+import com.google.maps.android.compose.MarkerComposable
 import com.google.maps.android.compose.Polyline
 import com.google.maps.android.compose.rememberCameraPositionState
 import com.google.maps.android.compose.rememberUpdatedMarkerState
@@ -403,7 +402,6 @@ private fun RouteMap(
     val current = locationAtProgress(points, sessionStartMillis, progressMillis)
     val currentLatLng = current?.let { LatLng(it.latitude, it.longitude) }
     val traveledRoute = traveledRouteAtProgress(points, sessionStartMillis, progressMillis)
-    val arrowIcon = remember { createArrowBitmapDescriptor() }
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(first?.let { LatLng(it.latitude, it.longitude) } ?: LatLng(35.6812, 139.7671), 15f)
     }
@@ -439,17 +437,42 @@ private fun RouteMap(
             )
         }
         current?.let {
-            Marker(
+            val bearing = it.bearingDegrees ?: 0f
+            MarkerComposable(
+                bearing,
                 state = rememberUpdatedMarkerState(LatLng(it.latitude, it.longitude)),
                 anchor = Offset(0.5f, 0.5f),
                 flat = true,
-                icon = arrowIcon,
-                rotation = it.bearingDegrees ?: 0f,
+                rotation = bearing,
                 title = "Current",
                 snippet = "Direction ${formatBearing(it.bearingDegrees)}",
                 zIndex = 2f
-            )
+            ) {
+                PlaybackArrowMarker()
+            }
         }
+    }
+}
+
+@Composable
+private fun PlaybackArrowMarker() {
+    Canvas(modifier = Modifier.size(48.dp)) {
+        val arrow = Path().apply {
+            moveTo(size.width / 2f, size.height * 0.08f)
+            lineTo(size.width * 0.82f, size.height * 0.86f)
+            lineTo(size.width / 2f, size.height * 0.66f)
+            lineTo(size.width * 0.18f, size.height * 0.86f)
+            close()
+        }
+        drawPath(
+            path = arrow,
+            color = Color(0xFFD32F2F)
+        )
+        drawPath(
+            path = arrow,
+            color = Color.White,
+            style = Stroke(width = 3.dp.toPx(), join = StrokeJoin.Round)
+        )
     }
 }
 
@@ -625,40 +648,6 @@ private fun targetTimeAtProgress(
 
 private fun List<LatLng>.distinctConsecutive(): List<LatLng> {
     return filterIndexed { index, latLng -> index == 0 || latLng != this[index - 1] }
-}
-
-private fun createArrowBitmapDescriptor(): BitmapDescriptor {
-    val size = 96
-    val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-    val canvas = Canvas(bitmap)
-    val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = AndroidColor.argb(80, 0, 0, 0)
-        style = Paint.Style.FILL
-    }
-    val arrowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = AndroidColor.rgb(211, 47, 47)
-        style = Paint.Style.FILL
-    }
-    val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = AndroidColor.WHITE
-        style = Paint.Style.STROKE
-        strokeWidth = 6f
-        strokeJoin = Paint.Join.ROUND
-    }
-    val arrow = Path().apply {
-        moveTo(size / 2f, 8f)
-        lineTo(78f, 82f)
-        lineTo(size / 2f, 64f)
-        lineTo(18f, 82f)
-        close()
-    }
-    canvas.save()
-    canvas.translate(0f, 4f)
-    canvas.drawPath(arrow, shadowPaint)
-    canvas.restore()
-    canvas.drawPath(arrow, arrowPaint)
-    canvas.drawPath(arrow, strokePaint)
-    return BitmapDescriptorFactory.fromBitmap(bitmap)
 }
 
 private data class ImportedSessionArchive(
