@@ -515,10 +515,10 @@ private fun RouteMap(
     mapType: MapType
 ) {
     val first = points.firstOrNull()
-    val route = points.map { LatLng(it.latitude, it.longitude) }
+    val route = smoothRoute(points.map { LatLng(it.latitude, it.longitude) })
     val current = locationAtProgress(points, sessionStartMillis, progressMillis)
     val currentLatLng = current?.let { LatLng(it.latitude, it.longitude) }
-    val traveledRoute = traveledRouteAtProgress(points, sessionStartMillis, progressMillis)
+    val traveledRoute = smoothRoute(traveledRouteAtProgress(points, sessionStartMillis, progressMillis))
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(first?.let { LatLng(it.latitude, it.longitude) } ?: LatLng(35.6812, 139.7671), 15f)
     }
@@ -765,6 +765,22 @@ private fun targetTimeAtProgress(
 
 private fun List<LatLng>.distinctConsecutive(): List<LatLng> {
     return filterIndexed { index, latLng -> index == 0 || latLng != this[index - 1] }
+}
+
+private fun smoothRoute(route: List<LatLng>): List<LatLng> {
+    if (route.size < 3) return route
+    return route.mapIndexed { index, point ->
+        if (index == 0 || index == route.lastIndex) {
+            point
+        } else {
+            val previous = route[index - 1]
+            val next = route[index + 1]
+            LatLng(
+                previous.latitude * 0.25 + point.latitude * 0.5 + next.latitude * 0.25,
+                previous.longitude * 0.25 + point.longitude * 0.5 + next.longitude * 0.25
+            )
+        }
+    }
 }
 
 private data class ImportedSessionArchive(

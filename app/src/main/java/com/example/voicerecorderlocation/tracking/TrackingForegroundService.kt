@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.location.Location
 import android.os.Environment
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -84,12 +85,21 @@ class TrackingForegroundService : Service() {
                 }
             }
             locationJob = launch {
-                var lastLocation: android.location.Location? = null
+                var lastAcceptedLocation: Location? = null
                 var pointCount = 0
                 LocationSampler(applicationContext).locations()
                     .catch { /* Keep recording audio even when location updates are unavailable. */ }
                     .collect { location ->
-                        val previousLocation = lastLocation
+                        val previousLocation = lastAcceptedLocation
+                        val rejectionReason = location.rejectionReason(previousLocation)
+                        if (rejectionReason != null) {
+                            scope.launch(Dispatchers.Main) {
+                                RecordingRuntimeState.locationStatus = rejectionReason
+                                RecordingRuntimeState.locationAccuracyMeters =
+                                    if (location.hasAccuracy()) location.accuracy else null
+                            }
+                            return@collect
+                        }
                         val bearingDegrees = when {
                             location.hasBearing() -> location.bearing
                             previousLocation != null && previousLocation.distanceTo(location) >= MIN_BEARING_DISTANCE_METERS ->
@@ -116,7 +126,7 @@ class TrackingForegroundService : Service() {
                                 if (location.hasAccuracy()) location.accuracy else null
                             RecordingRuntimeState.pointCount = pointCount
                         }
-                        lastLocation = location
+                        lastAcceptedLocation = location
                     }
             }
         }
@@ -172,6 +182,11 @@ class TrackingForegroundService : Service() {
         private const val CHANNEL_ID = "tracking"
         private const val NOTIFICATION_ID = 1001
         private const val MIN_BEARING_DISTANCE_METERS = 1f
+        const val MAX_ACCEPTED_ACCURACY_METERS = 50f
+        const val MIN_ACCEPTED_INTERVAL_MILLIS = 2_000L
+        const val MIN_ACCEPTED_DISTANCE_METERS = 3f
+        const val MIN_ACCURACY_IMPROVEMENT_METERS = 5f
+        const val MAX_REASONABLE_SPEED_METERS_PER_SECOND = 60f
         private const val ACTION_START = "com.example.voicerecorderlocation.START_TRACKING"
         private const val ACTION_STOP = "com.example.voicerecorderlocation.STOP_TRACKING"
         private val titleFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
@@ -186,6 +201,43 @@ class TrackingForegroundService : Service() {
 }
 
 private fun Float.normalizedBearing(): Float = (this + 360f) % 360f
+
+private fun Location.rejectionReason(previousAcceptedLocation: Location?): String? {
+    if (latitude !in -90.0..90.0 || longitude !in -180.0..180.0) {
+        return "Invalid location"
+    }
+    if (!hasAccuracy()) {
+        return "Low accuracy"
+    }
+    if (accuracy > TrackingForegroundService.MAX_ACCEPTED_ACCURACY_METERS) {
+        return "Low accuracy +/-${accuracy.toInt()} m"
+    }
+    if (previousAcceptedLocation == null) return null
+    if (time > 0L && previousAcceptedLocation.time > 0L && time <= previousAcceptedLocation.time) {
+        return "Stale location"
+    }
+
+    val elapsedMillis = if (time > 0L && previousAcceptedLocation.time > 0L) {
+        time - previousAcceptedLocation.time
+    } else {
+        Long.MAX_VALUE
+    }
+    val distanceMeters = previousAcceptedLocation.distanceTo(this)
+    val speedMetersPerSecond = if (elapsedMillis > 0L && elapsedMillis != Long.MAX_VALUE) {
+        distanceMeters / (elapsedMillis / 1_000f)
+    } else {
+        0f
+    }
+    if (speedMetersPerSecond > TrackingForegroundService.MAX_REASONABLE_SPEED_METERS_PER_SECOND) {
+        return "GPS jump filtered"
+    }
+
+    val accuracyImproved = previousAcceptedLocation.hasAccuracy() &&
+        previousAcceptedLocation.accuracy - accuracy >= TrackingForegroundService.MIN_ACCURACY_IMPROVEMENT_METERS
+    val enoughTime = elapsedMillis >= TrackingForegroundService.MIN_ACCEPTED_INTERVAL_MILLIS
+    val enoughDistance = distanceMeters >= TrackingForegroundService.MIN_ACCEPTED_DISTANCE_METERS
+    return if (enoughTime || enoughDistance || accuracyImproved) null else "Holding position"
+}
 
 private fun Int.normalizedAmplitudeLevel(): Float {
     if (this <= 0) return 0f
