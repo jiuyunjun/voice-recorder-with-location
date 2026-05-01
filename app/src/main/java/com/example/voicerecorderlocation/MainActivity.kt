@@ -5,8 +5,6 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.database.Cursor
-import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -18,6 +16,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -47,10 +47,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.core.content.ContextCompat.startForegroundService
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
@@ -70,8 +68,6 @@ import com.example.voicerecorderlocation.data.RecordingSessionEntity
 import com.example.voicerecorderlocation.di.ServiceLocator
 import com.example.voicerecorderlocation.tracking.TrackingForegroundService
 import com.google.android.gms.maps.CameraUpdateFactory
-import com.google.android.gms.maps.model.BitmapDescriptor
-import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.GoogleMap
@@ -88,8 +84,13 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.io.File
-import java.util.UUID
+import kotlin.math.PI
+import kotlin.math.asin
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
 import java.util.Locale
+import java.util.UUID
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -102,6 +103,10 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+}
+
+private object RecordingRuntimeState {
+    var isRecording by mutableStateOf(false)
 }
 
 @Composable
@@ -148,13 +153,13 @@ private fun VoiceRecorderApp() {
 @Composable
 private fun RecordingScreen() {
     val context = LocalContext.current
-    var isRecording by remember { mutableStateOf(false) }
+    val isRecording = RecordingRuntimeState.isRecording
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
         if (result.values.all { it }) {
             startForegroundService(context, TrackingForegroundService.startIntent(context))
-            isRecording = true
+            RecordingRuntimeState.isRecording = true
         }
     }
 
@@ -170,7 +175,7 @@ private fun RecordingScreen() {
             onClick = {
                 if (isRecording) {
                     context.startService(TrackingForegroundService.stopIntent(context))
-                    isRecording = false
+                    RecordingRuntimeState.isRecording = false
                 } else {
                     permissionLauncher.launch(requiredRuntimePermissions())
                 }
@@ -212,16 +217,10 @@ private fun RecordingListScreen(
                     Text("Import")
                 }
                 Button(
-                    onClick = {
-                        selectedIds = if (selectedIds.isEmpty()) {
-                            sessions.map { it.id }.toSet()
-                        } else {
-                            emptySet()
-                        }
-                    },
-                    enabled = sessions.isNotEmpty()
+                    onClick = { selectedIds = emptySet() },
+                    enabled = selectedIds.isNotEmpty()
                 ) {
-                    Text(if (selectedIds.isEmpty()) "Select" else "Clear")
+                    Text("Clear")
                 }
             }
             if (selectedIds.isNotEmpty()) {
@@ -253,27 +252,31 @@ private fun RecordingListScreen(
                         selectedIds + session.id
                     }
                 },
+                onStartSelection = { selectedIds = selectedIds + session.id },
                 onOpen = { onOpen(session.id) }
             )
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 private fun SessionCard(
     session: RecordingSessionEntity,
     selected: Boolean,
     selecting: Boolean,
     onToggleSelected: () -> Unit,
+    onStartSelection: () -> Unit,
     onOpen: () -> Unit
 ) {
-    Card(
-        onClick = { if (selecting) onToggleSelected() else onOpen() },
-        modifier = Modifier.fillMaxWidth()
-    ) {
+    Card(modifier = Modifier.fillMaxWidth()) {
         Row(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier
+                .combinedClickable(
+                    onClick = { if (selecting) onToggleSelected() else onOpen() },
+                    onLongClick = onStartSelection
+                )
+                .padding(16.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             if (selecting) {
@@ -369,12 +372,8 @@ private fun RouteMap(
     progressMillis: Long,
     mapType: MapType
 ) {
-    val context = LocalContext.current
     val first = points.firstOrNull()
     val route = points.map { LatLng(it.latitude, it.longitude) }
-    val directionIcon = remember {
-        bitmapDescriptorFromVector(context, R.drawable.ic_direction_arrow)
-    }
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(first?.let { LatLng(it.latitude, it.longitude) } ?: LatLng(35.6812, 139.7671), 15f)
     }
@@ -403,15 +402,15 @@ private fun RouteMap(
         }
         val current = pointAtProgress(points, progressMillis)
         current?.let {
+            val currentLatLng = LatLng(it.latitude, it.longitude)
             Marker(
-                state = rememberUpdatedMarkerState(LatLng(it.latitude, it.longitude)),
+                state = rememberUpdatedMarkerState(currentLatLng),
                 title = "Current",
-                snippet = "Direction ${formatBearing(it.bearingDegrees)}",
-                icon = directionIcon,
-                flat = true,
-                anchor = Offset(0.5f, 0.5f),
-                rotation = it.bearingDegrees ?: 0f
+                snippet = "Direction ${formatBearing(it.bearingDegrees)}"
             )
+            directionSegment(currentLatLng, it.bearingDegrees)?.let { segment ->
+                Polyline(points = segment, width = 8f)
+            }
         }
     }
 }
@@ -511,6 +510,29 @@ private fun pointAtProgress(points: List<LocationPointEntity>, progressMillis: L
     return points.lastOrNull { it.recordedAtMillis <= targetTime } ?: points.firstOrNull()
 }
 
+private fun directionSegment(origin: LatLng, bearingDegrees: Float?): List<LatLng>? {
+    val bearing = bearingDegrees ?: return null
+    return listOf(origin, destinationPoint(origin, bearing, 40.0))
+}
+
+private fun destinationPoint(origin: LatLng, bearingDegrees: Float, distanceMeters: Double): LatLng {
+    val angularDistance = distanceMeters / EARTH_RADIUS_METERS
+    val bearing = bearingDegrees.toDouble().degreesToRadians()
+    val lat1 = origin.latitude.degreesToRadians()
+    val lon1 = origin.longitude.degreesToRadians()
+
+    val lat2 = asin(
+        sin(lat1) * cos(angularDistance) +
+            cos(lat1) * sin(angularDistance) * cos(bearing)
+    )
+    val lon2 = lon1 + atan2(
+        sin(bearing) * sin(angularDistance) * cos(lat1),
+        cos(angularDistance) - sin(lat1) * sin(lat2)
+    )
+
+    return LatLng(lat2 * 180.0 / PI, lon2 * 180.0 / PI)
+}
+
 private fun shareSessions(context: Context, sessions: List<RecordingSessionEntity>) {
     val uris = sessions.mapNotNull { session ->
         val file = File(session.audioPath)
@@ -560,15 +582,6 @@ private fun Context.audioDurationMillis(uri: Uri): Long {
     }
 }
 
-private fun bitmapDescriptorFromVector(context: Context, drawableResId: Int): BitmapDescriptor {
-    val drawable = requireNotNull(ContextCompat.getDrawable(context, drawableResId))
-    val bitmap = Bitmap.createBitmap(
-        drawable.intrinsicWidth,
-        drawable.intrinsicHeight,
-        Bitmap.Config.ARGB_8888
-    )
-    val canvas = Canvas(bitmap)
-    drawable.setBounds(0, 0, canvas.width, canvas.height)
-    drawable.draw(canvas)
-    return BitmapDescriptorFactory.fromBitmap(bitmap)
-}
+private const val EARTH_RADIUS_METERS = 6_371_000.0
+
+private fun Double.degreesToRadians(): Double = this * PI / 180.0
