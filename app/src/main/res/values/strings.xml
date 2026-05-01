@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Voice Recorder With Location</string>
+    <string name="tracking_channel_name">Recording and location tracking</string>
+    <string name="tracking_notification_title">Recording in progress</string>
+    <string name="tracking_notification_text">Audio and location changes are being recorded.</string>
+</resources>
+
