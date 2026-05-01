@@ -63,9 +63,17 @@ class TrackingForegroundService : Service() {
             activeSessionId = sessionId
             recorder.start(audioFile)
             locationJob = launch {
+                var lastLocation: android.location.Location? = null
                 LocationSampler(applicationContext).locations()
                     .catch { /* Keep recording audio even when location updates are unavailable. */ }
                     .collect { location ->
+                        val previousLocation = lastLocation
+                        val bearingDegrees = when {
+                            location.hasBearing() -> location.bearing
+                            previousLocation != null && previousLocation.distanceTo(location) >= MIN_BEARING_DISTANCE_METERS ->
+                                previousLocation.bearingTo(location).normalizedBearing()
+                            else -> null
+                        }
                         ServiceLocator.repository.addLocation(
                             LocationPointEntity(
                                 sessionId = sessionId,
@@ -74,11 +82,12 @@ class TrackingForegroundService : Service() {
                                 accuracyMeters = if (location.hasAccuracy()) location.accuracy else null,
                                 altitudeMeters = if (location.hasAltitude()) location.altitude else null,
                                 speedMetersPerSecond = if (location.hasSpeed()) location.speed else null,
-                                bearingDegrees = if (location.hasBearing()) location.bearing else null,
+                                bearingDegrees = bearingDegrees,
                                 recordedAtMillis = location.time,
                                 elapsedRealtimeNanos = location.elapsedRealtimeNanos
                             )
                         )
+                        lastLocation = location
                     }
             }
         }
@@ -123,6 +132,7 @@ class TrackingForegroundService : Service() {
     companion object {
         private const val CHANNEL_ID = "tracking"
         private const val NOTIFICATION_ID = 1001
+        private const val MIN_BEARING_DISTANCE_METERS = 1f
         private const val ACTION_START = "com.example.voicerecorderlocation.START_TRACKING"
         private const val ACTION_STOP = "com.example.voicerecorderlocation.STOP_TRACKING"
         private val titleFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
@@ -135,3 +145,5 @@ class TrackingForegroundService : Service() {
             Intent(context, TrackingForegroundService::class.java).setAction(ACTION_STOP)
     }
 }
+
+private fun Float.normalizedBearing(): Float = (this + 360f) % 360f

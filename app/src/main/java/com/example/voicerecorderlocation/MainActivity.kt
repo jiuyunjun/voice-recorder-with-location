@@ -5,6 +5,8 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.database.Cursor
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -45,8 +47,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.core.content.ContextCompat.startForegroundService
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
@@ -66,6 +70,8 @@ import com.example.voicerecorderlocation.data.RecordingSessionEntity
 import com.example.voicerecorderlocation.di.ServiceLocator
 import com.example.voicerecorderlocation.tracking.TrackingForegroundService
 import com.google.android.gms.maps.CameraUpdateFactory
+import com.google.android.gms.maps.model.BitmapDescriptor
+import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.GoogleMap
@@ -351,6 +357,8 @@ private fun PlaybackScreen(sessionId: Long) {
             },
             valueRange = 0f..(player?.duration?.toFloat() ?: 1f)
         )
+        val currentPoint = pointAtProgress(state.points, progress.toLong())
+        Text("Direction ${formatBearing(currentPoint?.bearingDegrees)}")
         Text("${formatMillis(progress.toLong())} / ${formatMillis(player?.duration?.toLong() ?: 0)}")
     }
 }
@@ -361,8 +369,12 @@ private fun RouteMap(
     progressMillis: Long,
     mapType: MapType
 ) {
+    val context = LocalContext.current
     val first = points.firstOrNull()
     val route = points.map { LatLng(it.latitude, it.longitude) }
+    val directionIcon = remember {
+        bitmapDescriptorFromVector(context, R.drawable.ic_direction_arrow)
+    }
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(first?.let { LatLng(it.latitude, it.longitude) } ?: LatLng(35.6812, 139.7671), 15f)
     }
@@ -393,7 +405,12 @@ private fun RouteMap(
         current?.let {
             Marker(
                 state = rememberUpdatedMarkerState(LatLng(it.latitude, it.longitude)),
-                title = "Current"
+                title = "Current",
+                snippet = "Direction ${formatBearing(it.bearingDegrees)}",
+                icon = directionIcon,
+                flat = true,
+                anchor = Offset(0.5f, 0.5f),
+                rotation = it.bearingDegrees ?: 0f
             )
         }
     }
@@ -485,6 +502,9 @@ private fun formatMillis(millis: Long): String {
     return String.format(Locale.US, "%02d:%02d", minutes, seconds)
 }
 
+private fun formatBearing(bearingDegrees: Float?): String =
+    bearingDegrees?.let { "${it.toInt()} deg" } ?: "unknown"
+
 private fun pointAtProgress(points: List<LocationPointEntity>, progressMillis: Long): LocationPointEntity? {
     val firstTime = points.firstOrNull()?.recordedAtMillis ?: return null
     val targetTime = firstTime + progressMillis
@@ -538,4 +558,17 @@ private fun Context.audioDurationMillis(uri: Uri): Long {
     } finally {
         retriever.release()
     }
+}
+
+private fun bitmapDescriptorFromVector(context: Context, drawableResId: Int): BitmapDescriptor {
+    val drawable = requireNotNull(ContextCompat.getDrawable(context, drawableResId))
+    val bitmap = Bitmap.createBitmap(
+        drawable.intrinsicWidth,
+        drawable.intrinsicHeight,
+        Bitmap.Config.ARGB_8888
+    )
+    val canvas = Canvas(bitmap)
+    drawable.setBounds(0, 0, canvas.width, canvas.height)
+    drawable.draw(canvas)
+    return BitmapDescriptorFactory.fromBitmap(bitmap)
 }
