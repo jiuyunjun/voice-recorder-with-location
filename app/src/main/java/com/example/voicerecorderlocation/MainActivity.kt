@@ -62,6 +62,8 @@ import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.maps.android.compose.GoogleMap
+import com.google.maps.android.compose.MapProperties
+import com.google.maps.android.compose.MapType
 import com.google.maps.android.compose.Marker
 import com.google.maps.android.compose.Polyline
 import com.google.maps.android.compose.rememberCameraPositionState
@@ -212,6 +214,7 @@ private fun PlaybackScreen(sessionId: Long) {
     }
     var progress by remember { mutableFloatStateOf(0f) }
     var playing by remember { mutableStateOf(false) }
+    var mapType by remember { mutableStateOf(MapType.NORMAL) }
 
     DisposableEffect(player) {
         onDispose {
@@ -232,7 +235,15 @@ private fun PlaybackScreen(sessionId: Long) {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text(state.session?.title ?: "Playback", style = MaterialTheme.typography.headlineMedium)
-        RouteMap(points = state.points, progressMillis = progress.toLong())
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { mapType = MapType.NORMAL }, enabled = mapType != MapType.NORMAL) {
+                Text("Map")
+            }
+            Button(onClick = { mapType = MapType.SATELLITE }, enabled = mapType != MapType.SATELLITE) {
+                Text("Satellite")
+            }
+        }
+        RouteMap(points = state.points, progressMillis = progress.toLong(), mapType = mapType)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 onClick = {
@@ -265,7 +276,11 @@ private fun PlaybackScreen(sessionId: Long) {
 }
 
 @Composable
-private fun RouteMap(points: List<LocationPointEntity>, progressMillis: Long) {
+private fun RouteMap(
+    points: List<LocationPointEntity>,
+    progressMillis: Long,
+    mapType: MapType
+) {
     val first = points.firstOrNull()
     val route = points.map { LatLng(it.latitude, it.longitude) }
     val cameraPositionState = rememberCameraPositionState {
@@ -282,7 +297,8 @@ private fun RouteMap(points: List<LocationPointEntity>, progressMillis: Long) {
         modifier = Modifier
             .fillMaxWidth()
             .height(360.dp),
-        cameraPositionState = cameraPositionState
+        cameraPositionState = cameraPositionState,
+        properties = MapProperties(mapType = mapType)
     ) {
         if (route.size >= 2) {
             Polyline(points = route)
