@@ -10,15 +10,20 @@ class AudioRecorder {
         outputFile.parentFile?.mkdirs()
         @Suppress("DEPRECATION")
         val mediaRecorder = MediaRecorder()
-        mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC)
-        mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-        mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-        mediaRecorder.setAudioEncodingBitRate(128_000)
-        mediaRecorder.setAudioSamplingRate(44_100)
-        mediaRecorder.setOutputFile(outputFile.absolutePath)
-        mediaRecorder.prepare()
-        mediaRecorder.start()
-        recorder = mediaRecorder
+        try {
+            mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC)
+            mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            mediaRecorder.setAudioEncodingBitRate(128_000)
+            mediaRecorder.setAudioSamplingRate(44_100)
+            mediaRecorder.setOutputFile(outputFile.absolutePath)
+            mediaRecorder.prepare()
+            mediaRecorder.start()
+            recorder = mediaRecorder
+        } catch (e: Exception) {
+            runCatching { mediaRecorder.release() }
+            throw e
+        }
     }
 
     fun maxAmplitude(): Int = recorder?.maxAmplitude ?: 0

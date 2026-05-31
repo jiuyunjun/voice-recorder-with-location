@@ -11,7 +11,7 @@ object ServiceLocator {
     fun init(context: Context) {
         val appContext = context.applicationContext
         val database = AppDatabase.create(appContext)
-        repository = RecordingRepository(database.recordingDao(), database.locationPointDao())
+        repository = RecordingRepository(database.recordingDao(), database.locationPointDao(), database.placeMarkerDao())
     }
 }
 

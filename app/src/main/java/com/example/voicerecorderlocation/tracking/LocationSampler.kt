@@ -3,7 +3,7 @@ package com.example.voicerecorderlocation.tracking
 import android.annotation.SuppressLint
 import android.content.Context
 import android.location.Location
-import android.os.Looper
+import android.os.HandlerThread
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
@@ -18,17 +18,28 @@ class LocationSampler(context: Context) {
 
     @SuppressLint("MissingPermission")
     fun locations(): Flow<Location> = callbackFlow {
-        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 5_000L)
-            .setMinUpdateIntervalMillis(2_000L)
-            .setMinUpdateDistanceMeters(3f)
+        val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2_000L)
+            .setMinUpdateIntervalMillis(1_000L)
+            // NOTE: do NOT setWaitForAccurateLocation(true) — indoors it never gets an
+            // "accurate" GPS fix, so the first result would never arrive. We want every
+            // sample (incl. coarse WiFi/cell fixes) and let the Kalman filter smooth it.
             .build()
+
+        val handlerThread = HandlerThread("LocationSamplerThread").also { it.start() }
         val callback = object : LocationCallback() {
             override fun onLocationResult(result: LocationResult) {
                 result.locations.forEach { trySend(it) }
             }
         }
 
-        client.requestLocationUpdates(request, callback, Looper.getMainLooper())
-        awaitClose { client.removeLocationUpdates(callback) }
+        // Seed with the last known fix so the map can appear immediately — crucial
+        // indoors where a fresh GPS fix may take a long time or never arrive.
+        client.lastLocation.addOnSuccessListener { loc -> if (loc != null) trySend(loc) }
+
+        client.requestLocationUpdates(request, callback, handlerThread.looper)
+        awaitClose {
+            client.removeLocationUpdates(callback)
+            handlerThread.quitSafely()
+        }
     }
 }

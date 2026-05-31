@@ -10,6 +10,7 @@ data class RecordingSessionEntity(
     val audioPath: String,
     val startedAtMillis: Long,
     val endedAtMillis: Long? = null,
-    val durationMillis: Long = 0
+    val durationMillis: Long = 0,
+    /** Downsampled amplitude CSV (0..100), ~160 buckets. Null for recordings made before v2. */
+    val waveform: String? = null
 )
-
