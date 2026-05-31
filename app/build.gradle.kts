@@ -23,9 +23,10 @@ android {
                 localPropertiesFile.inputStream().use(::load)
             }
         }
-        val mapsApiKey = providers.gradleProperty("MAPS_API_KEY")
-            .orElse(localProperties.getProperty("MAPS_API_KEY", ""))
-            .get()
+        // Priority: -P gradle property → MAPS_API_KEY env var (CI secret) → local.properties
+        val mapsApiKey = providers.gradleProperty("MAPS_API_KEY").orNull
+            ?: System.getenv("MAPS_API_KEY")
+            ?: localProperties.getProperty("MAPS_API_KEY", "")
         manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
     }
 

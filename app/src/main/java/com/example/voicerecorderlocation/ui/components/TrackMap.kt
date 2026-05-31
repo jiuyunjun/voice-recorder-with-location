@@ -22,8 +22,9 @@ import com.example.voicerecorderlocation.ui.theme.Gold
 import com.example.voicerecorderlocation.ui.theme.Mint
 import com.example.voicerecorderlocation.util.formatBearing
 import com.example.voicerecorderlocation.util.locationAtProgress
+import com.example.voicerecorderlocation.util.routeSegments
 import com.example.voicerecorderlocation.util.smoothRoute
-import com.example.voicerecorderlocation.util.traveledRouteAtProgress
+import com.example.voicerecorderlocation.util.traveledSegmentsAtProgress
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
@@ -51,8 +52,9 @@ fun TrackMap(
     modifier: Modifier = Modifier
 ) {
     val first = points.firstOrNull()
-    val route = smoothRoute(points.map { LatLng(it.latitude, it.longitude) })
-    val traveled = smoothRoute(traveledRouteAtProgress(points, sessionStartMillis, progressMillis))
+    // Routes are split at GPS gaps so signal-loss stretches aren't bridged by a fake line.
+    val routeSegs = routeSegments(points).map { smoothRoute(it) }
+    val traveledSegs = traveledSegmentsAtProgress(points, sessionStartMillis, progressMillis).map { smoothRoute(it) }
     val current = locationAtProgress(points, sessionStartMillis, progressMillis)
     val currentLatLng = current?.let { LatLng(it.latitude, it.longitude) }
 
@@ -87,8 +89,12 @@ fun TrackMap(
         ),
         uiSettings = MapUiSettings(zoomControlsEnabled = false, mapToolbarEnabled = false)
     ) {
-        if (route.size >= 2) Polyline(points = route, color = Color(0x29FFFFFF), width = 6f)
-        if (traveled.size >= 2) Polyline(points = traveled, color = Mint, width = 12f, zIndex = 1f)
+        routeSegs.forEach { seg ->
+            if (seg.size >= 2) Polyline(points = seg, color = Color(0x29FFFFFF), width = 6f)
+        }
+        traveledSegs.forEach { seg ->
+            if (seg.size >= 2) Polyline(points = seg, color = Mint, width = 12f, zIndex = 1f)
+        }
 
         first?.let {
             MarkerComposable(
