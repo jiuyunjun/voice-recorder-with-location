@@ -85,8 +85,8 @@ fun RecordingScreen() {
     val context = LocalContext.current
     val rec = RecordingRuntimeState.isRecording
     val startedAt = RecordingRuntimeState.startedAtMillis
-    val level = RecordingRuntimeState.amplitudeLevel
     val accuracy = RecordingRuntimeState.locationAccuracyMeters
+    val speedMps = RecordingRuntimeState.currentSpeedMps
     val pointCount = RecordingRuntimeState.pointCount
     val markers = RecordingRuntimeState.markers
     val activeId = RecordingRuntimeState.activeSessionId
@@ -160,15 +160,15 @@ fun RecordingScreen() {
                 Text(".%02d".format((elapsed % 1000) / 10), color = TextDim,
                     fontFamily = NumFamily, fontSize = 28.sp, modifier = Modifier.padding(bottom = 6.dp))
             }
-            LiveWaveform(active = rec, level = level,
+            LiveWaveform(active = rec,
                 modifier = Modifier.fillMaxWidth().height(56.dp).padding(top = 6.dp))
         }
 
         // Stats
         Row(Modifier.fillMaxWidth().padding(bottom = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             StatChip("距离", "%.2f".format(distKm), "km", modifier = Modifier.weight(1f))
+            StatChip("速度", speedMps?.let { "%.1f".format(it * 3.6f) } ?: "—", "km/h", modifier = Modifier.weight(1f))
             StatChip("GPS 精度", accuracy?.let { "±${it.roundToInt()}" } ?: "—", "m", modifier = Modifier.weight(1f))
-            StatChip("坐标点", "$pointCount", modifier = Modifier.weight(1f))
         }
 
         // Marker chips

@@ -12,6 +12,7 @@ class RecordingRepository(
     fun observePoints(sessionId: Long): Flow<List<LocationPointEntity>> = locationPointDao.observePoints(sessionId)
     fun observeMarkers(sessionId: Long): Flow<List<PlaceMarkerEntity>> = placeMarkerDao.observeMarkers(sessionId)
 
+    suspend fun getSession(id: Long): RecordingSessionEntity? = recordingDao.getSession(id)
     suspend fun getPoints(sessionId: Long): List<LocationPointEntity> = locationPointDao.getPoints(sessionId)
     suspend fun getMarkers(sessionId: Long): List<PlaceMarkerEntity> = placeMarkerDao.getMarkers(sessionId)
 

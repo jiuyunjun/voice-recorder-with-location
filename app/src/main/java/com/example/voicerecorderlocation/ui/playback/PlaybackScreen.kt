@@ -183,7 +183,12 @@ fun PlaybackScreen(sessionId: Long, onBack: () -> Unit) {
                         Spacer(Modifier.width(8.dp))
                         Icon(Icons.Filled.Edit, "重命名", tint = TextDim, modifier = Modifier.size(15.dp))
                     }
-                    if (hasTrack) Text("朝${compassLabel(current?.bearingDegrees)}", color = Mint, fontFamily = NumFamily, fontSize = 13.sp)
+                    if (hasTrack) {
+                        val spd = current?.speedMps
+                        val label = "朝${compassLabel(current?.bearingDegrees)}" +
+                            (spd?.let { " · %.1f km/h".format(it * 3.6f) } ?: "")
+                        Text(label, color = Mint, fontFamily = NumFamily, fontSize = 13.sp)
+                    }
                 }
             }
 

@@ -1,9 +1,12 @@
 package com.example.voicerecorderlocation.util
 
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
+import android.provider.MediaStore
 import androidx.core.content.FileProvider
 import com.example.voicerecorderlocation.data.LocationPointEntity
 import com.example.voicerecorderlocation.data.PlaceMarkerEntity
@@ -80,6 +83,60 @@ fun Context.exportSessionZip(
         }
         zipFile
     }.getOrNull()
+}
+
+/**
+ * Auto-backup a complete session (audio + metadata + track + markers + waveform) as a ZIP
+ * into public storage (Download/SoundTrail) so it survives an app data-clear or reinstall.
+ * Returns true on success. No-op on API < 29 (would need WRITE_EXTERNAL_STORAGE).
+ */
+fun Context.backupSessionZipToPublic(
+    session: RecordingSessionEntity,
+    points: List<LocationPointEntity>,
+    markers: List<PlaceMarkerEntity>
+): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
+    val audioFile = File(session.audioPath)
+    if (!audioFile.exists()) return false
+
+    return runCatching {
+        val safeTitle = session.title.sanitizedFileName().ifBlank { "recording-${session.id}" }
+        val fileName = "$safeTitle-${session.id}.zip"
+        val audioEntryName = "recording.${audioFile.extension.ifBlank { "m4a" }}"
+        val metadata = sessionArchiveMetadata(session, points, markers, audioEntryName)
+        val geoJson = sessionTrackGeoJson(session, points)
+
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+            put(MediaStore.Downloads.MIME_TYPE, "application/zip")
+            put(MediaStore.Downloads.RELATIVE_PATH, "Download/SoundTrail")
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val resolver = contentResolver
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: return false
+
+        resolver.openOutputStream(uri)?.use { out ->
+            ZipOutputStream(out).use { zip ->
+                zip.putNextEntry(ZipEntry(audioEntryName))
+                audioFile.inputStream().use { it.copyTo(zip) }
+                zip.closeEntry()
+
+                zip.putNextEntry(ZipEntry("metadata.json"))
+                zip.write(metadata.toString(2).toByteArray(Charsets.UTF_8))
+                zip.closeEntry()
+
+                zip.putNextEntry(ZipEntry("track.geojson"))
+                zip.write(geoJson.toString(2).toByteArray(Charsets.UTF_8))
+                zip.closeEntry()
+            }
+        } ?: return false
+
+        values.clear()
+        values.put(MediaStore.Downloads.IS_PENDING, 0)
+        resolver.update(uri, values, null, null)
+        true
+    }.getOrDefault(false)
 }
 
 fun Context.importSessionZip(uri: Uri): ImportedSessionArchive? = runCatching {

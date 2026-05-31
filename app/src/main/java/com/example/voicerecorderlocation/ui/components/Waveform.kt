@@ -26,7 +26,6 @@ import kotlin.math.sin
 @Composable
 fun LiveWaveform(
     active: Boolean,
-    level: Float,
     modifier: Modifier = Modifier,
     bars: Int = 40
 ) {
@@ -46,11 +45,15 @@ fun LiveWaveform(
         var x = (size.width - totalW) / 2f
         val cy = size.height / 2f
         val maxH = size.height
+        // Decorative animated waveform (not tied to real loudness): each bar's seed
+        // gives an uneven profile and the phase term makes it flow while recording.
         for (i in 0 until n) {
             val s = seeds[i]
-            val h = if (active)
-                (6f + (s * 0.4f + level * 0.9f) * (maxH * 0.9f) * (0.6f + 0.4f * sin(phase + i))).coerceIn(4f, maxH)
-            else (4f + s * 10f)
+            val h = if (active) {
+                (maxH * 0.12f + s * maxH * 0.78f * (0.45f + 0.55f * sin(phase + i * 0.6f))).coerceIn(3f, maxH)
+            } else {
+                4f + s * 8f
+            }
             drawRoundRect(
                 color = color.copy(alpha = if (active) 0.9f else 0.5f),
                 topLeft = Offset(x, cy - h / 2f),

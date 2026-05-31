@@ -6,7 +6,8 @@ import com.google.android.gms.maps.model.LatLng
 data class PlaybackLocation(
     val latitude: Double,
     val longitude: Double,
-    val bearingDegrees: Float?
+    val bearingDegrees: Float?,
+    val speedMps: Float?
 )
 
 // Points normally arrive every ~2 s. A larger gap means GPS signal loss — the path
@@ -40,8 +41,16 @@ fun locationAtProgress(
     return PlaybackLocation(
         latitude = previous.latitude + (next.latitude - previous.latitude) * fraction,
         longitude = previous.longitude + (next.longitude - previous.longitude) * fraction,
-        bearingDegrees = interpolateBearing(previous.bearingDegrees, next.bearingDegrees, fraction)
+        bearingDegrees = interpolateBearing(previous.bearingDegrees, next.bearingDegrees, fraction),
+        speedMps = interpolateSpeed(previous.speedMetersPerSecond, next.speedMetersPerSecond, fraction)
     )
+}
+
+/** Linear interpolation between two speeds, tolerating nulls. */
+private fun interpolateSpeed(a: Float?, b: Float?, fraction: Double): Float? {
+    if (a == null) return b
+    if (b == null) return a
+    return (a + (b - a) * fraction).toFloat()
 }
 
 /** Shortest-arc interpolation between two compass bearings, handling the 359°→1° wrap. */
@@ -126,7 +135,8 @@ fun smoothRoute(route: List<LatLng>): List<LatLng> {
 private fun LocationPointEntity.toPlaybackLocation() = PlaybackLocation(
     latitude = latitude,
     longitude = longitude,
-    bearingDegrees = bearingDegrees
+    bearingDegrees = bearingDegrees,
+    speedMps = speedMetersPerSecond
 )
 
 private fun List<LatLng>.distinctConsecutive(): List<LatLng> =

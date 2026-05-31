@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import com.example.voicerecorderlocation.ui.components.ListIcon
 import com.example.voicerecorderlocation.ui.components.MicIcon
@@ -47,7 +48,7 @@ fun VoiceRecorderApp() {
     val route = backStack?.destination?.route
     val showNav = route == "record" || route == "sessions"
 
-    Column(Modifier.fillMaxSize().background(Bg)) {
+    Column(Modifier.fillMaxSize().background(Bg).systemBarsPadding()) {
         Box(Modifier.weight(1f)) {
             NavHost(navController, startDestination = "record") {
                 composable("record") { RecordingScreen() }
@@ -92,17 +93,21 @@ private fun NavItem(
     onClick: () -> Unit
 ) {
     val tint = if (on) Mint else TextDim
-    Column(
+    // Outer box fills the tab slot (clickable area); the inner pill wraps icon + label
+    // so the selected-state background hugs the whole item, not just the icon.
+    Box(
         modifier.clickable(onClick = onClick).padding(vertical = 6.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+        contentAlignment = Alignment.Center
     ) {
-        Box(
-            Modifier.fillMaxWidth().heightIn(min = 32.dp).clip(RoundedCornerShape(16.dp))
+        Column(
+            Modifier.clip(RoundedCornerShape(18.dp))
                 .background(if (on) MintSoft else androidx.compose.ui.graphics.Color.Transparent)
-                .padding(vertical = 5.dp),
-            contentAlignment = Alignment.Center
-        ) { icon(tint) }
-        Spacer(Modifier.height(4.dp))
-        Text(label, color = tint, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                .padding(horizontal = 20.dp, vertical = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            icon(tint)
+            Spacer(Modifier.height(4.dp))
+            Text(label, color = tint, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+        }
     }
 }

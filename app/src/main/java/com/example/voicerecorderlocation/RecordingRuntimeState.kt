@@ -13,6 +13,7 @@ object RecordingRuntimeState {
     var amplitudeLevel by mutableFloatStateOf(0f)
     var locationStatus by mutableStateOf("等待 GPS")
     var locationAccuracyMeters by mutableStateOf<Float?>(null)
+    var currentSpeedMps by mutableStateOf<Float?>(null)
     var pointCount by mutableStateOf(0)
     var activeSessionId by mutableStateOf<Long?>(null)
     var markers by mutableStateOf<List<LiveMarker>>(emptyList())

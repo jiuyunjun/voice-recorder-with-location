@@ -16,6 +16,7 @@ import com.example.voicerecorderlocation.RecordingRuntimeState
 import com.example.voicerecorderlocation.data.LocationPointEntity
 import com.example.voicerecorderlocation.data.PlaceMarkerEntity
 import com.example.voicerecorderlocation.di.ServiceLocator
+import com.example.voicerecorderlocation.util.backupSessionZipToPublic
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -102,6 +103,7 @@ class TrackingForegroundService : Service() {
                 RecordingRuntimeState.amplitudeLevel = 0f
                 RecordingRuntimeState.locationStatus = "等待 GPS"
                 RecordingRuntimeState.locationAccuracyMeters = null
+                RecordingRuntimeState.currentSpeedMps = null
                 RecordingRuntimeState.pointCount = 0
                 RecordingRuntimeState.activeSessionId = sessionId
                 RecordingRuntimeState.markers = emptyList()
@@ -187,9 +189,11 @@ class TrackingForegroundService : Service() {
                             )
                             pointCount += 1
                             lastLocation = location
+                            val speedMps = if (location.hasSpeed()) location.speed else null
                             withContext(Dispatchers.Main) {
                                 RecordingRuntimeState.locationStatus = "已锁定"
                                 RecordingRuntimeState.locationAccuracyMeters = accuracy
+                                RecordingRuntimeState.currentSpeedMps = speedMps
                                 RecordingRuntimeState.pointCount = pointCount
                             }
                             lastAcceptedLocation = location
@@ -233,6 +237,7 @@ class TrackingForegroundService : Service() {
             RecordingRuntimeState.amplitudeLevel = 0f
             RecordingRuntimeState.locationStatus = "等待 GPS"
             RecordingRuntimeState.locationAccuracyMeters = null
+            RecordingRuntimeState.currentSpeedMps = null
             RecordingRuntimeState.pointCount = 0
             RecordingRuntimeState.activeSessionId = null
             RecordingRuntimeState.markers = emptyList()
@@ -240,6 +245,16 @@ class TrackingForegroundService : Service() {
         scope.launch {
             ServiceLocator.repository.finishSession(sessionId, System.currentTimeMillis())
             if (waveformCsv.isNotEmpty()) runCatching { ServiceLocator.repository.saveWaveform(sessionId, waveformCsv) }
+            // Auto-backup the complete session (audio + track + markers + waveform) to
+            // public Download/SoundTrail so it survives an app data-clear or reinstall.
+            runCatching {
+                val saved = ServiceLocator.repository.getSession(sessionId)
+                if (saved != null) {
+                    val pts = ServiceLocator.repository.getPoints(sessionId)
+                    val mks = ServiceLocator.repository.getMarkers(sessionId)
+                    applicationContext.backupSessionZipToPublic(saved, pts, mks)
+                }
+            }
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
